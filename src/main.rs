@@ -2,8 +2,25 @@ use std::error::Error;
 use std::net::{TcpListener, TcpStream, UdpSocket, SocketAddr};
 use std::io::{Read, Write};
 use std::thread;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::fmt;
+use std::time::Duration;
+use clap::Parser;
+
+#[derive(Parser, Debug, Clone)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    #[clap(short, long, default_value = "127.0.0.1")]
+    listen_addr: String,
+    #[clap(short, long, default_value = "3000")]
+    tcp_port: u16,
+    #[clap(short, long, default_value = "3001")]
+    udp_port: u16,
+    #[clap(short, long, default_value = "127.0.0.1")]
+    socks5_addr: String,
+    #[clap(short, long, default_value = "1080")]
+    socks5_port: u16,
+}
 
 #[derive(Debug)]
 struct ProxyError(String);
@@ -17,75 +34,75 @@ impl fmt::Display for ProxyError {
 impl std::error::Error for ProxyError {}
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // 启动TCP代理
-    thread::spawn(|| {
-        if let Err(e) = run_tcp_proxy() {
+    let args = Args::parse();
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        println!("Shutting down...");
+        r.store(false, Ordering::SeqCst);
+    })?;
+
+    let tcp_args = args.clone();
+    let tcp_handle = thread::spawn(move || {
+        if let Err(e) = run_tcp_proxy(&tcp_args, running.clone()) {
             eprintln!("TCP proxy error: {}", e);
         }
     });
 
-    // 启动UDP代理
-    run_udp_proxy()?;
+    let udp_args = args;
+    let udp_handle = thread::spawn(move || {
+        if let Err(e) = run_udp_proxy(&udp_args, running) {
+            eprintln!("UDP proxy error: {}", e);
+        }
+    });
+
+    tcp_handle.join().unwrap();
+    udp_handle.join().unwrap();
 
     Ok(())
 }
 
-fn run_tcp_proxy() -> Result<(), Box<dyn Error>> {
-    let listener = TcpListener::bind("127.0.0.1:3000")?;
-    println!("TCP proxy listening on port 3000");
+fn run_tcp_proxy(args: &Args, running: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
+    let listener = TcpListener::bind(format!("{}:{}", args.listen_addr, args.tcp_port))?;
+    println!("TCP proxy listening on {}:{}", args.listen_addr, args.tcp_port);
 
-    for stream in listener.incoming() {
-        let stream = stream?;
-        
-        thread::spawn(move || {
-            if let Err(e) = handle_tcp_connection(stream) {
-                eprintln!("Error handling TCP connection: {}", e);
+    listener.set_nonblocking(true)?;
+
+    while running.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let socks5_addr = format!("{}:{}", args.socks5_addr, args.socks5_port);
+                thread::spawn(move || {
+                    if let Err(e) = handle_tcp_connection(stream, &socks5_addr) {
+                        eprintln!("Error handling TCP connection: {}", e);
+                    }
+                });
             }
-        });
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(Box::new(e)),
+        }
     }
 
     Ok(())
 }
 
-fn handle_tcp_connection(mut client_stream: TcpStream) -> Result<(), ProxyError> {
-    let mut socks5_stream = TcpStream::connect("127.0.0.1:1080")
+fn handle_tcp_connection(mut client_stream: TcpStream, socks5_addr: &str) -> Result<(), ProxyError> {
+    let mut socks5_stream = TcpStream::connect(socks5_addr)
         .map_err(|e| ProxyError(format!("Failed to connect to SOCKS5: {}", e)))?;
 
-    let mut client_to_socks = vec![0; 1024];
-    let mut socks_to_client = vec![0; 1024];
+    perform_socks5_handshake(&mut socks5_stream)?;
 
     let mut client_clone = client_stream.try_clone()
         .map_err(|e| ProxyError(format!("Failed to clone client stream: {}", e)))?;
     let mut socks5_clone = socks5_stream.try_clone()
         .map_err(|e| ProxyError(format!("Failed to clone SOCKS5 stream: {}", e)))?;
 
-    let t1 = thread::spawn(move || {
-        loop {
-            match client_stream.read(&mut client_to_socks) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if socks5_stream.write_all(&client_to_socks[..n]).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let t2 = thread::spawn(move || {
-        loop {
-            match socks5_clone.read(&mut socks_to_client) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if client_clone.write_all(&socks_to_client[..n]).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let t1 = thread::spawn(move || transfer_data(&mut client_stream, &mut socks5_stream));
+    let t2 = thread::spawn(move || transfer_data(&mut socks5_clone, &mut client_clone));
 
     t1.join().map_err(|_| ProxyError("Thread 1 panicked".to_string()))?;
     t2.join().map_err(|_| ProxyError("Thread 2 panicked".to_string()))?;
@@ -93,23 +110,48 @@ fn handle_tcp_connection(mut client_stream: TcpStream) -> Result<(), ProxyError>
     Ok(())
 }
 
-fn run_udp_proxy() -> Result<(), Box<dyn Error>> {
-    let socket = Arc::new(UdpSocket::bind("127.0.0.1:3001")?);
-    println!("UDP proxy listening on port 3001");
-
-    let socks5_addr = "127.0.0.1:1080";
-
+fn transfer_data(from: &mut impl Read, to: &mut impl Write) -> Result<(), ProxyError> {
+    let mut buffer = [0; 8192];
     loop {
-        let socket_clone = Arc::clone(&socket);
-        let mut buf = [0u8; 65507];  // Max UDP packet size
-        let (size, src_addr) = socket_clone.recv_from(&mut buf)?;
-
-        thread::spawn(move || {
-            if let Err(e) = handle_udp_packet(socket_clone, &buf[..size], src_addr, socks5_addr) {
-                eprintln!("Error handling UDP packet: {}", e);
+        match from.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                to.write_all(&buffer[..n])
+                    .map_err(|e| ProxyError(format!("Failed to write data: {}", e)))?;
             }
-        });
+            Err(e) => return Err(ProxyError(format!("Failed to read data: {}", e))),
+        }
     }
+    Ok(())
+}
+
+fn run_udp_proxy(args: &Args, running: Arc<AtomicBool>) -> Result<(), Box<dyn Error>> {
+    let socket = Arc::new(UdpSocket::bind(format!("{}:{}", args.listen_addr, args.udp_port))?);
+    println!("UDP proxy listening on {}:{}", args.listen_addr, args.udp_port);
+
+    socket.set_nonblocking(true)?;
+
+    while running.load(Ordering::SeqCst) {
+        let mut buf = [0u8; 65507];
+        match socket.recv_from(&mut buf) {
+            Ok((size, src_addr)) => {
+                let socket_clone = Arc::clone(&socket);
+                let socks5_addr = format!("{}:{}", args.socks5_addr, args.socks5_port);
+                thread::spawn(move || {
+                    if let Err(e) = handle_udp_packet(socket_clone, &buf[..size], src_addr, &socks5_addr) {
+                        eprintln!("Error handling UDP packet: {}", e);
+                    }
+                });
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(Box::new(e)),
+        }
+    }
+
+    Ok(())
 }
 
 fn handle_udp_packet(
@@ -120,13 +162,7 @@ fn handle_udp_packet(
 ) -> Result<(), Box<dyn Error>> {
     let mut socks5_tcp = TcpStream::connect(socks5_addr)?;
 
-    socks5_tcp.write_all(&[0x05, 0x01, 0x00])?;
-    let mut response = [0u8; 2];
-    socks5_tcp.read_exact(&mut response)?;
-
-    if response != [0x05, 0x00] {
-        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SOCKS5 handshake failed")));
-    }
+    perform_socks5_handshake(&mut socks5_tcp)?;
 
     let udp_request = [
         0x05, 0x03, 0x00, 0x01,
@@ -139,7 +175,7 @@ fn handle_udp_packet(
     socks5_tcp.read_exact(&mut response)?;
 
     if response[1] != 0x00 {
-        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "UDP ASSOCIATE failed")));
+        return Err(Box::new(ProxyError("UDP ASSOCIATE failed".to_string())));
     }
 
     let relay_port = u16::from_be_bytes([response[8], response[9]]);
@@ -159,6 +195,21 @@ fn handle_udp_packet(
 
     let response_data = &response[10..size];
     local_socket.send_to(response_data, src_addr)?;
+
+    Ok(())
+}
+
+fn perform_socks5_handshake(stream: &mut TcpStream) -> Result<(), ProxyError> {
+    stream.write_all(&[0x05, 0x01, 0x00])
+        .map_err(|e| ProxyError(format!("Failed to write SOCKS5 handshake: {}", e)))?;
+
+    let mut response = [0u8; 2];
+    stream.read_exact(&mut response)
+        .map_err(|e| ProxyError(format!("Failed to read SOCKS5 handshake response: {}", e)))?;
+
+    if response != [0x05, 0x00] {
+        return Err(ProxyError("SOCKS5 handshake failed".to_string()));
+    }
 
     Ok(())
 }

@@ -221,7 +221,6 @@ async fn perform_socks5_handshake(stream: &mut TcpStream) -> Result<(), ProxyErr
     Ok(())
 }
 
-Version 3 of 3
 
 
 

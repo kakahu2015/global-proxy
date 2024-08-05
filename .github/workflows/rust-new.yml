@@ -1,41 +1,51 @@
-name: Rust CI/CD
+name: Manual Release
 
 on:
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
-  workflow_dispatch:  # 允许手动触发
-  release:
-    types: [created]  # 当创建新的 release 时触发
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version'
+        required: true
+        default: '0.1.0'
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - uses: actions/checkout@v2
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
-    steps:
-    - uses: actions/checkout@v3
-    - name: Build Release
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Build
       run: cargo build --release
+
+    - name: Run tests
+      run: cargo test --release
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.event.inputs.version }}
+        release_name: Release ${{ github.event.inputs.version }}
+        draft: false
+        prerelease: false
+
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./target/release/global-proxy
-        asset_name: global-proxy
+        asset_name: global-proxy-${{ github.event.inputs.version }}
         asset_content_type: application/octet-stream

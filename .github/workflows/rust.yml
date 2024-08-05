@@ -1,12 +1,10 @@
-name: Rust
+name: Rust CI/CD
 
 on:
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
-  release:
-    types: [created]
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,25 +13,50 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4  # 更新到最新版本
+    - uses: actions/checkout@v3
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
 
-  release:
-    if: github.event_name == 'release'
+  upload-binary:
+    needs: build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4  # 更新到最新版本
-    - name: Build release
-      run: cargo build --release
+    - uses: actions/checkout@v3
+    - name: Upload Binary
+      uses: actions/upload-artifact@v3
+      with:
+        name: your_program_name
+        path: path/to/your/binary/your_program_name-v*
+        if-no-files-found: error
+
+  create-release:
+    needs: upload-binary
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+    - uses: actions/checkout@v3
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+    - name: Download Binary
+      uses: actions/download-artifact@v3
+      with:
+        name: your_program_name
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./target/release/your_program_name
-        asset_name: your_program_name-${{ github.ref_name }}-linux
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./your_program_name-v*
+        asset_name: your_program_name-${{ github.ref_name }}-linux-x86_64
         asset_content_type: application/octet-stream

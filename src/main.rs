@@ -3,6 +3,20 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::io::{Read, Write};
 use std::thread;
 use std::sync::Arc;
+use std::fmt;
+
+#[derive(Debug)]
+struct ProxyError(String);
+
+impl fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ProxyError {}
+
+
 
 fn main() -> Result<(), Box<dyn Error>> {
     // 启动TCP代理
@@ -35,26 +49,27 @@ fn run_tcp_proxy() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn handle_tcp_connection(mut client_stream: TcpStream) -> Result<(), Box<dyn Error>> {
-    let mut socks5_stream = TcpStream::connect("127.0.0.1:1080")?;
+fn handle_tcp_connection(mut client_stream: TcpStream) -> Result<(), ProxyError> {
+    let mut socks5_stream = TcpStream::connect("127.0.0.1:1080")
+        .map_err(|e| ProxyError(format!("Failed to connect to SOCKS5: {}", e)))?;
 
-    let (mut client_read, mut client_write) = client_stream.split()?;
-    let (mut socks_read, mut socks_write) = socks5_stream.split()?;
+    let (mut client_read, mut client_write) = client_stream.split()
+        .map_err(|e| ProxyError(format!("Failed to split client stream: {}", e)))?;
+    let (mut socks_read, mut socks_write) = socks5_stream.split()
+        .map_err(|e| ProxyError(format!("Failed to split SOCKS5 stream: {}", e)))?;
 
     let t1 = thread::spawn(move || {
-        std::io::copy(&mut client_read, &mut socks_write).map_err(|e| {
-            eprintln!("Error forwarding client to SOCKS5 (TCP): {}", e);
-        })
+        std::io::copy(&mut client_read, &mut socks_write)
+            .map_err(|e| ProxyError(format!("Error forwarding client to SOCKS5 (TCP): {}", e)))
     });
 
     let t2 = thread::spawn(move || {
-        std::io::copy(&mut socks_read, &mut client_write).map_err(|e| {
-            eprintln!("Error forwarding SOCKS5 to client (TCP): {}", e);
-        })
+        std::io::copy(&mut socks_read, &mut client_write)
+            .map_err(|e| ProxyError(format!("Error forwarding SOCKS5 to client (TCP): {}", e)))
     });
 
-    t1.join().expect("Thread 1 panicked")?;
-    t2.join().expect("Thread 2 panicked")?;
+    t1.join().expect("Thread 1 panicked")??;
+    t2.join().expect("Thread 2 panicked")??;
 
     Ok(())
 }

@@ -5,52 +5,51 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  release:
+    types: [created]
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build-and-upload:
+  build:
+    name: Build and Test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
-      run: cargo build --release
-    - name: List files in target directory
-      run: ls -R target/release
-    - name: Upload Binary
-      uses: actions/upload-artifact@v3
-      with:
-        name: fastproxy
-        path: target/release/fastproxy
-        if-no-files-found: error
+      - uses: actions/checkout@v3
+      - name: Install latest rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+          override: true
+      - name: Build
+        run: cargo build --all --release
+      - name: Run tests
+        run: cargo test --all --release
+      - name: List build artifacts
+        run: ls -R target/release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: fastproxy
+          path: target/release/fastproxy
+          if-no-files-found: error
 
-  create-release:
-    needs: build-and-upload
-    runs-on: ubuntu-latest
+  release:
+    name: Release
+    needs: [build]
     if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-    - name: Download Binary
-      uses: actions/download-artifact@v3
-      with:
-        name: fastproxy
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./fastproxy
-        asset_name: fastproxy-${{ github.ref_name }}-linux-x86_64
-        asset_content_type: application/octet-stream
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: fastproxy
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: fastproxy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

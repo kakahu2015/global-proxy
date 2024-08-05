@@ -43,12 +43,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    let tcp_args = args.clone();
-    let tcp_handle = thread::spawn(move || {
-        if let Err(e) = run_tcp_proxy(&tcp_args, running.clone()) {
-            eprintln!("TCP proxy error: {}", e);
-        }
-    });
+let udp_args = args;
+let udp_running = running.clone();
+let udp_handle = thread::spawn(move || {
+    if let Err(e) = run_udp_proxy(&udp_args, udp_running) {
+        eprintln!("UDP proxy error: {}", e);
+    }
+});
 
     let udp_args = args;
     let udp_handle = thread::spawn(move || {

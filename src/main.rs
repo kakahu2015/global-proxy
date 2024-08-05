@@ -43,6 +43,22 @@ struct Args {
     udp_timeout: u64,
 }
 
+// Implement From<config::Config> for Args
+impl From<config::Config> for Args {
+    fn from(config: config::Config) -> Self {
+        Args {
+            listen_addr: config.get_string("listen_addr").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            tcp_port: config.get_int("tcp_port").unwrap_or(3000) as u16,
+            udp_port: config.get_int("udp_port").unwrap_or(3001) as u16,
+            socks5_addr: config.get_string("socks5_addr").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            socks5_port: config.get_int("socks5_port").unwrap_or(1080) as u16,
+            buffer_size: config.get_int("buffer_size").unwrap_or(8192) as usize,
+            tcp_timeout: config.get_int("tcp_timeout").unwrap_or(60) as u64,
+            udp_timeout: config.get_int("udp_timeout").unwrap_or(30) as u64,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();

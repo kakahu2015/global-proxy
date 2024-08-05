@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket, SocketAddr};
 use std::io::{Read, Write};
 use std::thread;
 use std::sync::Arc;
@@ -54,9 +54,9 @@ fn handle_tcp_connection(mut client_stream: TcpStream) -> Result<(), ProxyError>
     let mut client_to_socks = vec![0; 1024];
     let mut socks_to_client = vec![0; 1024];
 
-    let client_clone = client_stream.try_clone()
+    let mut client_clone = client_stream.try_clone()
         .map_err(|e| ProxyError(format!("Failed to clone client stream: {}", e)))?;
-    let socks5_clone = socks5_stream.try_clone()
+    let mut socks5_clone = socks5_stream.try_clone()
         .map_err(|e| ProxyError(format!("Failed to clone SOCKS5 stream: {}", e)))?;
 
     let t1 = thread::spawn(move || {
@@ -115,13 +115,11 @@ fn run_udp_proxy() -> Result<(), Box<dyn Error>> {
 fn handle_udp_packet(
     local_socket: Arc<UdpSocket>,
     data: &[u8],
-    src_addr: std::net::SocketAddr,
+    src_addr: SocketAddr,
     socks5_addr: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // 建立到 SOCKS5 服务器的 TCP 连接
     let mut socks5_tcp = TcpStream::connect(socks5_addr)?;
 
-    // 发送 SOCKS5 握手
     socks5_tcp.write_all(&[0x05, 0x01, 0x00])?;
     let mut response = [0u8; 2];
     socks5_tcp.read_exact(&mut response)?;
@@ -130,18 +128,13 @@ fn handle_udp_packet(
         return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "SOCKS5 handshake failed")));
     }
 
-    // 发送 UDP ASSOCIATE 请求
     let udp_request = [
-        0x05, // SOCKS version
-        0x03, // UDP ASSOCIATE command
-        0x00, // Reserved
-        0x01, // IPv4 address type
-        0, 0, 0, 0, // IP address (0.0.0.0)
-        0, 0, // Port (0, let the server decide)
+        0x05, 0x03, 0x00, 0x01,
+        0, 0, 0, 0,
+        0, 0,
     ];
     socks5_tcp.write_all(&udp_request)?;
 
-    // 读取 SOCKS5 服务器的响应
     let mut response = [0u8; 10];
     socks5_tcp.read_exact(&mut response)?;
 
@@ -149,29 +142,21 @@ fn handle_udp_packet(
         return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "UDP ASSOCIATE failed")));
     }
 
-    // 解析 SOCKS5 服务器提供的 UDP 中继地址和端口
     let relay_port = u16::from_be_bytes([response[8], response[9]]);
     let relay_addr = format!("{}.{}.{}.{}:{}", response[4], response[5], response[6], response[7], relay_port);
 
-    // 创建 UDP socket 并发送数据
     let udp_socket = UdpSocket::bind("0.0.0.0:0")?;
     
-    // 构造 SOCKS5 UDP 请求头
-    let mut socks_udp_header = vec![
-        0, 0, 0, // Reserved
-        1, // IPv4 address type
-    ];
-    socks_udp_header.extend_from_slice(&src_addr.ip().octets());
+    let mut socks_udp_header = vec![0, 0, 0, 1];
+    socks_udp_header.extend_from_slice(&src_addr.ip().to_string().parse::<std::net::IpAddr>()?.to_string().as_bytes());
     socks_udp_header.extend_from_slice(&src_addr.port().to_be_bytes());
     socks_udp_header.extend_from_slice(data);
 
     udp_socket.send_to(&socks_udp_header, &relay_addr)?;
 
-    // 接收响应并转发回客户端
     let mut response = [0u8; 65507];
     let (size, _) = udp_socket.recv_from(&mut response)?;
 
-    // 跳过 SOCKS5 UDP 响应头
     let response_data = &response[10..size];
     local_socket.send_to(response_data, src_addr)?;
 

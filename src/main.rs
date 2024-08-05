@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -21,6 +21,9 @@ enum ProxyError {
     
     #[error("Config error: {0}")]
     ConfigError(#[from] config::ConfigError),
+
+    #[error("Address parse error: {0}")]
+    AddrParse(#[from] std::net::AddrParseError),
 }
 
 #[derive(Parser, Debug, Clone, Deserialize)]
@@ -43,7 +46,6 @@ struct Args {
     udp_timeout: u64,
 }
 
-// Implement From<config::Config> for Args
 impl From<config::Config> for Args {
     fn from(config: config::Config) -> Self {
         Args {
@@ -70,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config: Args = config.try_into()?;
 
     let (shutdown_sender, shutdown_receiver) = mpsc::channel::<()>(1);
-    let shutdown_receiver = Arc::new(shutdown_receiver);
+    let shutdown_receiver = Arc::new(Mutex::new(shutdown_receiver));
 
     let tcp_handle = tokio::spawn(run_tcp_proxy(config.clone(), Arc::clone(&shutdown_receiver)));
     let udp_handle = tokio::spawn(run_udp_proxy(config, Arc::clone(&shutdown_receiver)));
@@ -88,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_tcp_proxy(config: Args, mut shutdown: Arc<mpsc::Receiver<()>>) -> Result<(), ProxyError> {
+async fn run_tcp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -> Result<(), ProxyError> {
     let listener = TcpListener::bind(format!("{}:{}", config.listen_addr, config.tcp_port)).await?;
     println!("TCP proxy listening on {}:{}", config.listen_addr, config.tcp_port);
 
@@ -104,7 +106,7 @@ async fn run_tcp_proxy(config: Args, mut shutdown: Arc<mpsc::Receiver<()>>) -> R
                     }
                 });
             }
-            _ = shutdown.recv() => break,
+            _ = shutdown.lock().unwrap().recv() => break,
         }
     }
 
@@ -132,7 +134,7 @@ async fn handle_tcp_connection(mut client_stream: TcpStream, config: &Args) -> R
     Ok(())
 }
 
-async fn run_udp_proxy(config: Args, mut shutdown: Arc<mpsc::Receiver<()>>) -> Result<(), ProxyError> {
+async fn run_udp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -> Result<(), ProxyError> {
     let socket = Arc::new(UdpSocket::bind(format!("{}:{}", config.listen_addr, config.udp_port)).await?);
     println!("UDP proxy listening on {}:{}", config.listen_addr, config.udp_port);
 
@@ -152,7 +154,7 @@ async fn run_udp_proxy(config: Args, mut shutdown: Arc<mpsc::Receiver<()>>) -> R
                     }
                 });
             }
-            _ = shutdown.recv() => break,
+            _ = shutdown.lock().unwrap().recv() => break,
         }
     }
 
@@ -190,7 +192,7 @@ async fn handle_udp_packet(
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     
     let mut socks_udp_header = vec![0, 0, 0, 1];
-    socks_udp_header.extend_from_slice(&src_addr.ip().to_string().parse::<std::net::IpAddr>()?.octets());
+    socks_udp_header.extend_from_slice(&src_addr.ip().to_string().parse::<std::net::IpAddr>()?.octets().into_iter().collect::<Vec<_>>());
     socks_udp_header.extend_from_slice(&src_addr.port().to_be_bytes());
     socks_udp_header.extend_from_slice(data);
 
@@ -218,3 +220,8 @@ async fn perform_socks5_handshake(stream: &mut TcpStream) -> Result<(), ProxyErr
 
     Ok(())
 }
+
+Version 3 of 3
+
+
+

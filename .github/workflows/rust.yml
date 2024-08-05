@@ -24,11 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - name: List files in target directory
+      run: ls -R target
     - name: Upload Binary
       uses: actions/upload-artifact@v3
       with:
-        name: your_program_name
-        path: path/to/your/binary/your_program_name-v*
+        name: fastproxy
+        path: target/release/fastproxy
         if-no-files-found: error
 
   create-release:
@@ -50,13 +52,13 @@ jobs:
     - name: Download Binary
       uses: actions/download-artifact@v3
       with:
-        name: your_program_name
+        name: fastproxy
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./your_program_name-v*
-        asset_name: your_program_name-${{ github.ref_name }}-linux-x86_64
+        asset_path: ./fastproxy
+        asset_name: fastproxy-${{ github.ref_name }}-linux-x86_64
         asset_content_type: application/octet-stream

@@ -65,9 +65,10 @@ impl From<config::Config> for Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
-    let mut config = Config::default();
-    config.merge(config::File::with_name("config").required(false))?;
-    config.merge(config::Environment::with_prefix("PROXY"))?;
+    let config = ConfigBuilder::new()
+        .add_source(File::with_name("config").required(false))
+        .add_source(Environment::with_prefix("PROXY"))
+        .build()?;
     
     let config: Args = config.try_into()?;
 
@@ -106,31 +107,13 @@ async fn run_tcp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
                     }
                 });
             }
-            _ = shutdown.lock().unwrap().recv() => break,
+            _ = shutdown.lock().unwrap().recv() => {
+                break;
+            }
         }
     }
 
     println!("TCP proxy stopped");
-    Ok(())
-}
-
-async fn handle_tcp_connection(mut client_stream: TcpStream, config: &Args) -> Result<(), ProxyError> {
-    let mut socks5_stream = TcpStream::connect(format!("{}:{}", config.socks5_addr, config.socks5_port)).await?;
-
-    perform_socks5_handshake(&mut socks5_stream).await?;
-
-    let (mut client_read, mut client_write) = client_stream.split();
-    let (mut socks_read, mut socks_write) = socks5_stream.split();
-
-    tokio::select! {
-        result = tokio::io::copy(&mut client_read, &mut socks_write) => {
-            result?;
-        }
-        result = tokio::io::copy(&mut socks_read, &mut client_write) => {
-            result?;
-        }
-    }
-
     Ok(())
 }
 
@@ -154,7 +137,9 @@ async fn run_udp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
                     }
                 });
             }
-            _ = shutdown.lock().unwrap().recv() => break,
+            _ = shutdown.lock().unwrap().recv() => {
+                break;
+            }
         }
     }
 

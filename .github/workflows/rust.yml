@@ -15,20 +15,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
 
   release:
-    needs: build
-    if: github.event_name == 'release' && github.event.action == 'created'
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Build release
-      run: cargo build --release --verbose
+      run: cargo build --release
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
       env:
@@ -36,5 +35,5 @@ jobs:
       with:
         upload_url: ${{ github.event.release.upload_url }}
         asset_path: ./target/release/your_program_name
-        asset_name: your_program_name-${{ github.ref }}-linux
+        asset_name: your_program_name-${{ github.ref_name }}-linux
         asset_content_type: application/octet-stream

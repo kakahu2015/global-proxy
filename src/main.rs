@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use thiserror::Error;
 use clap::Parser;
 use serde::Deserialize;
-use config::{Config, ConfigBuilder, File, Environment};
+use config::{Config, File, Environment};
 
 #[derive(Error, Debug)]
 enum ProxyError {
@@ -65,7 +65,7 @@ impl From<Config> for Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
-    let config = ConfigBuilder::new()
+    let config = Config::builder()
         .add_source(File::with_name("config").required(false))
         .add_source(Environment::with_prefix("PROXY"))
         .build()?;
@@ -95,6 +95,8 @@ async fn run_tcp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
     let listener = TcpListener::bind(format!("{}:{}", config.listen_addr, config.tcp_port)).await?;
     println!("TCP proxy listening on {}:{}", config.listen_addr, config.tcp_port);
 
+    let mut shutdown_receiver = shutdown.lock().await;
+
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -107,7 +109,7 @@ async fn run_tcp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
                     }
                 });
             }
-            _ = shutdown.lock().unwrap().recv() => {
+            _ = shutdown_receiver.recv() => {
                 break;
             }
         }
@@ -122,7 +124,7 @@ async fn run_udp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
     println!("UDP proxy listening on {}:{}", config.listen_addr, config.udp_port);
 
     let mut buf = vec![0u8; config.buffer_size];
-    let mut shutdown_receiver = shutdown.lock().unwrap();
+    let mut shutdown_receiver = shutdown.lock().await;
 
     loop {
         tokio::select! {

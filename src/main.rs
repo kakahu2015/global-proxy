@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, Mutex};
 use thiserror::Error;
 use clap::Parser;
 use serde::Deserialize;
-use config::{Config, File, Environment};
+use config::{Config, File,FileFormat, Environment};
 
 #[derive(Error, Debug)]
 enum ProxyError {
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
     let config = Config::builder()
-        .add_source(File::with_name("config").required(false))
+        .add_source(File::new("config.yaml", FileFormat::Yaml).required(false))
         .add_source(Environment::with_prefix("PROXY"))
         .build()?;
     

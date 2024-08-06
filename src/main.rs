@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use thiserror::Error;
 use clap::Parser;
 use serde::Deserialize;
-use config::Config;
+use config::{Config, ConfigBuilder, File, Environment};
 
 #[derive(Error, Debug)]
 enum ProxyError {
@@ -46,8 +46,8 @@ struct Args {
     udp_timeout: u64,
 }
 
-impl From<config::Config> for Args {
-    fn from(config: config::Config) -> Self {
+impl From<Config> for Args {
+    fn from(config: Config) -> Self {
         Args {
             listen_addr: config.get_string("listen_addr").unwrap_or_else(|_| "127.0.0.1".to_string()),
             tcp_port: config.get_int("tcp_port").unwrap_or(3000) as u16,
@@ -122,6 +122,7 @@ async fn run_udp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
     println!("UDP proxy listening on {}:{}", config.listen_addr, config.udp_port);
 
     let mut buf = vec![0u8; config.buffer_size];
+    let mut shutdown_receiver = shutdown.lock().unwrap();
 
     loop {
         tokio::select! {
@@ -137,13 +138,22 @@ async fn run_udp_proxy(config: Args, shutdown: Arc<Mutex<mpsc::Receiver<()>>>) -
                     }
                 });
             }
-            _ = shutdown.lock().unwrap().recv() => {
+            _ = shutdown_receiver.recv() => {
                 break;
             }
         }
     }
 
     println!("UDP proxy stopped");
+    Ok(())
+}
+
+async fn handle_tcp_connection(mut stream: TcpStream, config: &Args) -> Result<(), ProxyError> {
+    let mut socks5_stream = TcpStream::connect(format!("{}:{}", config.socks5_addr, config.socks5_port)).await?;
+    perform_socks5_handshake(&mut socks5_stream).await?;
+    
+    tokio::io::copy_bidirectional(&mut stream, &mut socks5_stream).await?;
+    
     Ok(())
 }
 
@@ -177,7 +187,11 @@ async fn handle_udp_packet(
     let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     
     let mut socks_udp_header = vec![0, 0, 0, 1];
-    socks_udp_header.extend_from_slice(&src_addr.ip().to_string().parse::<std::net::IpAddr>()?.octets().into_iter().collect::<Vec<_>>());
+    let ip_bytes = match src_addr.ip() {
+        std::net::IpAddr::V4(ipv4) => ipv4.octets().to_vec(),
+        std::net::IpAddr::V6(ipv6) => ipv6.octets().to_vec(),
+    };
+    socks_udp_header.extend_from_slice(&ip_bytes);
     socks_udp_header.extend_from_slice(&src_addr.port().to_be_bytes());
     socks_udp_header.extend_from_slice(data);
 
@@ -205,7 +219,3 @@ async fn perform_socks5_handshake(stream: &mut TcpStream) -> Result<(), ProxyErr
 
     Ok(())
 }
-
-
-
-

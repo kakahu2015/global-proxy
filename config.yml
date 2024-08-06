@@ -1,0 +1,8 @@
+listen_addr: "127.0.0.1"
+tcp_port: 3000
+udp_port: 3001
+socks5_addr: "127.0.0.1"
+socks5_port: 1080
+buffer_size: 8192
+tcp_timeout: 60
+udp_timeout: 30
